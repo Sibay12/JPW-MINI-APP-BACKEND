@@ -8,16 +8,39 @@ app.use(cors());
 
 // --- Bot Credentials Hardcoded ---
 const CUSTOMER_BOT_TOKEN = '8874503246:AAEmdPcVJMQ3q6pmINsP_Tcwium3ANV4T6I';
+const MINI_APP_URL = 'https://jpw-mini-app-front-end.vercel.app/';
 const ADMIN_BOT_TOKEN = 'YOUR_ADMIN_BOT_TOKEN_HERE'; // <--- यहाँ अपना Admin Bot Token डालें
 const ADMIN_CHAT_ID = 'YOUR_ADMIN_CHAT_ID_HERE';     // <--- यहाँ अपनी Telegram Chat ID डालें
 
-// Bot Instances
-const customerBot = new TelegramBot(CUSTOMER_BOT_TOKEN, { polling: false });
+// Bot Instances (Both Polling Enabled)
+const customerBot = new TelegramBot(CUSTOMER_BOT_TOKEN, { polling: true });
 const adminBot = new TelegramBot(ADMIN_BOT_TOKEN, { polling: true });
 
 // Database simulation
 let users = {};
 let pendingTransactions = {};
+
+// --- Handle /start command on Customer Bot ---
+customerBot.onText(/\/start/, (msg) => {
+    const chatId = msg.chat.id;
+    const firstName = msg.from.first_name || 'User';
+
+    const welcomeMessage = `✨ *Welcome, ${firstName}!*\n\nWelcome to *JPW REACHED SERVICES BOT*.\nClick the button below to launch the Mini App and manage your reaches!`;
+
+    customerBot.sendMessage(chatId, welcomeMessage, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🚀 Open App',
+                        web_app: { url: MINI_APP_URL }
+                    }
+                ]
+            ]
+        }
+    });
+});
 
 // 1. Root Endpoint
 app.get('/', (req, res) => {
@@ -80,9 +103,9 @@ app.post('/api/request-purchase', async (req, res) => {
     res.json({ success: true, message: "Request successfully sent to admin!" });
 });
 
-// 4. Submit Credentials (Updated with custom dynamic fields support)
+// 4. Submit Credentials
 app.post('/api/submit-credentials', async (req, res) => {
-    const { telegramId, targetId, targetPassword, workOrders, location, customerName, time, queueInfo, estimatedTime } = req.body;
+    const { telegramId, targetId, targetPassword, workOrders, time, queueInfo, estimatedTime } = req.body;
 
     if (!telegramId || !targetId || !targetPassword) {
         return res.status(400).json({ success: false, error: "All fields are required" });
@@ -95,12 +118,12 @@ app.post('/api/submit-credentials', async (req, res) => {
     users[telegramId].reaches -= 1;
     const remainingReaches = users[telegramId].reaches;
 
-    // Send credentials and dynamic details to Admin Bot
+    // Send credentials to Admin Bot
     try {
         await adminBot.sendMessage(ADMIN_CHAT_ID, `📤 *New Credentials Submitted*\n\n👤 User ID: \`${telegramId}\`\n🔑 ID: \`${targetId}\`\n🔒 Password: \`${targetPassword}\``, { parse_mode: 'Markdown' });
     } catch (e) {}
 
-    // 🤖 Send formatted Queue/Processing notification to Customer Bot as requested
+    // 🤖 Formatted Queue Status Notification to Customer Bot
     const formattedQueueMsg = `
 🤖 *JPW REACHED SERVICES BOT STATUS*
 
@@ -109,12 +132,12 @@ app.post('/api/submit-credentials', async (req, res) => {
 ⏰ Time: ${time || 'Just now'}
 
 📍 Queue Position: ${queueInfo || '1/1'}
-⏳ Action Required: Don't login your ID. Please wait till 1.5 min (approx ${estimatedTime || '1 min'})
+⏳ Action Required: Please do not log in to your ID. Estimated wait time: ${estimatedTime || '1.5 min'}.
 
 📋 Work Orders:
-${workOrders ? workOrders.map((wo, index) => `${index === 0 ? '  🎯 ' : '  • '}${wo}`).join('\n') : '  • N/A'}
+${workOrders && Array.isArray(workOrders) ? workOrders.map((wo, index) => `${index === 0 ? '  🎯 ' : '  • '}${wo}`).join('\n') : '  • N/A'}
 
-🔄 Processing...
+🔄 Status: Processing...
 `.trim();
 
     try {
@@ -152,7 +175,7 @@ adminBot.on('callback_query', async (query) => {
         users[telegramId].reaches += reachesToAdd;
         const totalUserReaches = users[telegramId].reaches;
 
-        // ✅ Success Notification Format (As requested, without plan validity)
+        // ✅ Success Notification Format
         const successReportMsg = `
 ✅ *REACHED SUCCESSFULLY*
 
@@ -179,7 +202,7 @@ adminBot.on('callback_query', async (query) => {
     } else if (type === 'reject') {
         // Notify Customer via Customer Bot
         try {
-            await customerBot.sendMessage(telegramId, `❌ *Payment Rejected*\n\nYour payment (UTR: \`${utrNumber}\`) was rejected. Please check your UTR or contact support.`, { parse_mode: 'Markdown' });
+            await customerBot.sendMessage(telegramId, `❌ *Payment Rejected*\n\nYour payment (UTR: \`${utrNumber}\`) was rejected. Please verify your UTR or contact support.`, { parse_mode: 'Markdown' });
         } catch (e) {}
 
         // Update Admin Bot Message
