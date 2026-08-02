@@ -1,0 +1,13 @@
+{
+  "name": "telegram-reach-backend",
+  "version": "1.0.0",
+  "description": "Backend for Telegram Reach Mini App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "express": "^4.19.2"
+  }
+}
