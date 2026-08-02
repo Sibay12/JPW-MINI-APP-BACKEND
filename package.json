@@ -1,13 +1,14 @@
 {
   "name": "jpw-telegram-bot",
   "version": "1.0.0",
-  "description": "Telegram Bot for JPW Reached Services",
+  "description": "Persistent Telegram Bot for JPW Reached Services",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
     "node-cron": "^3.0.3",
+    "node-persist": "^3.1.0",
     "node-telegram-bot-api": "^0.64.0"
   }
 }
