@@ -1,24 +1,43 @@
 const TelegramBot = require('node-telegram-bot-api');
 const cron = require('node-cron');
+const storage = require('node-persist');
 
 // --- Configuration ---
 const CUSTOMER_BOT_TOKEN = '8874503246:AAEmdPcVJMQ3q6pmINsP_Tcwium3ANV4T6I';
 const ADMIN_BOT_TOKEN = '8787715855:AAF9PLZkk_tOb28TYcyTcAs_NszwURnzhkw';
 const ADMIN_CHAT_ID = '7659178694';
 const UPI_ID = 'paytm.s2ujlw0@pty';
-const BOT_USERNAME = 'JPW_REACHED_SERVICES_BOT'; // अपने बोट का यूजरनेम (बिना @ के) लिखें
+const BOT_USERNAME = 'JPW_REACHED_SERVICES_BOT'; 
 
 const customerBot = new TelegramBot(CUSTOMER_BOT_TOKEN, { polling: true });
 const adminBot = new TelegramBot(ADMIN_BOT_TOKEN, { polling: true });
 
-// Permanent In-Memory Database
-let users = {}; 
 let userState = {}; 
 let pendingTx = {}; 
 
-// Polling Error Handlers
-customerBot.on('polling_error', (err) => console.error('[Customer Bot Error]', err.message));
-adminBot.on('polling_error', (err) => console.error('[Admin Bot Error]', err.message));
+// Initialize Permanent Disk Storage
+(async () => {
+    await storage.init({ dir: './bot_data_store' });
+    console.log("Database initialized successfully!");
+})();
+
+// Storage Helper Functions
+async function getUsers() {
+    let users = await storage.getItem('users');
+    return users || {};
+}
+
+async function saveUsers(users) {
+    await storage.setItem('users', users);
+}
+
+async function initUser(chatId) {
+    let users = await getUsers();
+    if (!users[chatId]) {
+        users[chatId] = { reaches: 0, referredBy: null, successfulRefers: 0, pendingOrders: 0 };
+        await saveUsers(users);
+    }
+}
 
 // Helper Keyboard
 const getMainKeyboard = () => ({
@@ -31,14 +50,9 @@ const getMainKeyboard = () => ({
     }
 });
 
-const initUser = (chatId) => {
-    if (!users[chatId]) {
-        users[chatId] = { reaches: 0, referredBy: null, successfulRefers: 0, pendingOrders: 0 };
-    }
-    if (users[chatId].pendingOrders === undefined) {
-        users[chatId].pendingOrders = 0;
-    }
-};
+// Polling Error Handlers
+customerBot.on('polling_error', (err) => console.error('[Customer Bot Error]', err.message));
+adminBot.on('polling_error', (err) => console.error('[Admin Bot Error]', err.message));
 
 // ==========================================
 // 🕒 AUTOMATIC HOURLY MESSAGES (9 AM to 8 PM)
@@ -56,6 +70,7 @@ cron.schedule('0 9-20 * * *', async () => {
     }
 
     const broadcastMessage = `${greeting}\n\n🤖 *JPW REACHED SERVICES BOT*\nClick below to access our services anytime.`;
+    const users = await getUsers();
 
     for (const chatId in users) {
         try {
@@ -69,11 +84,11 @@ cron.schedule('0 9-20 * * *', async () => {
     timezone: "Asia/Kolkata"
 });
 
-// Helper function to process credential submission with Instant Deduction & Locking
+// Process credential submission
 async function processCredentialsSubmission(chatId, targetId, targetPass) {
-    initUser(chatId);
+    await initUser(chatId);
+    let users = await getUsers();
 
-    // 1. Check if user has available reaches
     if (users[chatId].reaches <= 0) {
         return customerBot.sendMessage(
             chatId,
@@ -82,12 +97,13 @@ async function processCredentialsSubmission(chatId, targetId, targetPass) {
         );
     }
 
-    // 2. Lock & Instantly Deduct 1 Reach for this order
+    // Deduct 1 Reach & Save to Disk Immediately
     users[chatId].reaches -= 1;
-    users[chatId].pendingOrders += 1;
+    users[chatId].pendingOrders = (users[chatId].pendingOrders || 0) + 1;
+    await saveUsers(users);
+
     const remainingBalance = users[chatId].reaches;
 
-    // Send Credentials to Admin with Action Buttons
     const adminMsg = `
 📤 *NEW CREDENTIALS SUBMITTED*
 
@@ -117,10 +133,9 @@ async function processCredentialsSubmission(chatId, targetId, targetPass) {
         }
     );
 
-    // Confirmation to Customer
     return customerBot.sendMessage(
         chatId,
-        `✅ *Credentials Submitted & Queued!*\n\n👤 Engineer ID: \`${targetId}\`\n📉 *1 Credit Deducted* (Pending Approval)\n📍 *Current Balance:* ${remainingBalance} Reaches\n\nYour request is queued for processing.`,
+        `✅ *Credentials Submitted & Queued!*\n\n👤 Engineer ID: \`${targetId}\`\n📉 *1 Credit Deducted*\n📍 *Current Balance:* ${remainingBalance} Reaches\n\nYour request is queued for processing.`,
         { parse_mode: 'Markdown' }
     );
 }
@@ -128,16 +143,18 @@ async function processCredentialsSubmission(chatId, targetId, targetPass) {
 // ==========================================
 // 1. START COMMAND & REFERRAL HANDLING
 // ==========================================
-customerBot.onText(/\/start(.*)/, (msg, match) => {
+customerBot.onText(/\/start(.*)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const startParam = match[1] ? match[1].trim() : '';
 
-    initUser(chatId);
+    await initUser(chatId);
+    let users = await getUsers();
 
     if (startParam.startsWith('ref_')) {
         const referrerId = startParam.replace('ref_', '');
         if (referrerId !== String(chatId) && users[referrerId]) {
             users[chatId].referredBy = referrerId;
+            await saveUsers(users);
         }
     }
     userState[chatId] = null; 
@@ -152,10 +169,11 @@ customerBot.onText(/\/start(.*)/, (msg, match) => {
 // ==========================================
 // 2. ADMIN COMMANDS (/refers)
 // ==========================================
-adminBot.onText(/\/refers/, (msg) => {
+adminBot.onText(/\/refers/, async (msg) => {
     const chatId = msg.chat.id;
     if (String(chatId) !== ADMIN_CHAT_ID) return;
 
+    let users = await getUsers();
     let report = "📊 *REFERRAL SYSTEM REPORT*\n\n";
     let count = 0;
 
@@ -182,19 +200,18 @@ customerBot.on('message', async (msg) => {
 
     if (!text || text.startsWith('/')) return;
 
-    initUser(chatId);
+    await initUser(chatId);
+    let users = await getUsers();
     const currentState = userState[chatId] ? userState[chatId].step : null;
 
-    // --- Profile ---
     if (text === '👤 My Profile') {
         return customerBot.sendMessage(
             chatId,
-            `👤 *YOUR PROFILE*\n\n🆔 Telegram ID: \`${chatId}\`\n📍 Available Reaches: *${users[chatId].reaches}*\n⏳ Pending Orders: *${users[chatId].pendingOrders}*\n👥 Completed Refers: *${users[chatId].successfulRefers}*`,
+            `👤 *YOUR PROFILE*\n\n🆔 Telegram ID: \`${chatId}\`\n📍 Available Reaches: *${users[chatId].reaches}*\n⏳ Pending Orders: *${users[chatId].pendingOrders || 0}*\n👥 Completed Refers: *${users[chatId].successfulRefers || 0}*`,
             { parse_mode: 'Markdown' }
         );
     }
 
-    // --- Referral Dashboard ---
     if (text === '🔗 Refer & Earn') {
         const refLink = `https://t.me/${BOT_USERNAME}?start=ref_${chatId}`;
         const refMsg = `
@@ -204,16 +221,15 @@ customerBot.on('message', async (msg) => {
 \`${refLink}\`
 
 📊 *Your Stats:*
-• Successful Refers: *${users[chatId].successfulRefers}*
-• Earned Bonus: *${users[chatId].successfulRefers * 5} Reaches*
+• Successful Refers: *${users[chatId].successfulRefers || 0}*
+• Earned Bonus: *${(users[chatId].successfulRefers || 0) * 5} Reaches*
 
-🎁 *Condition:* You will receive *5 Free Reaches* only AFTER your referred friend's minimum recharge of *₹200* is SUCCESSFUL and approved by Admin.
+🎁 *Condition:* You receive *5 Free Reaches* only AFTER your referred friend's minimum recharge of *₹200* is SUCCESSFUL.
         `.trim();
 
         return customerBot.sendMessage(chatId, refMsg, { parse_mode: 'Markdown' });
     }
 
-    // --- Buy Reaches ---
     if (text === '💳 Buy Reaches') {
         userState[chatId] = null;
         return customerBot.sendMessage(chatId, `💳 *Select a Reach Package:*`, {
@@ -229,7 +245,6 @@ customerBot.on('message', async (msg) => {
         });
     }
 
-    // --- Submit Credentials Button ---
     if (text === '📤 Submit Credentials') {
         if (users[chatId].reaches <= 0) {
             return customerBot.sendMessage(chatId, `❌ *Insufficient Reaches!*\nPlease buy reaches first. Current Balance: ${users[chatId].reaches}`);
@@ -238,7 +253,6 @@ customerBot.on('message', async (msg) => {
         return customerBot.sendMessage(chatId, `🔑 *Step 1/2:* Please send your *Target ID*:`, { parse_mode: 'Markdown' });
     }
 
-    // --- UTR Input Step ---
     if (currentState === 'AWAITING_UTR') {
         const utrNumber = text.trim();
         const pkg = userState[chatId].pkg;
@@ -256,7 +270,7 @@ customerBot.on('message', async (msg) => {
 💰 *Recharge Amount:* ₹${pkg.amount}
 📦 *Purchased Reaches:* ${pkg.reaches} Reaches
 📍 *Current Balance:* ${users[chatId].reaches} Reaches
-🔗 *Completed Refers:* ${users[chatId].successfulRefers}
+🔗 *Completed Refers:* ${users[chatId].successfulRefers || 0}
         `.trim();
 
         return adminBot.sendMessage(
@@ -276,7 +290,6 @@ customerBot.on('message', async (msg) => {
         );
     }
 
-    // --- Credentials Input Steps (Interactive) ---
     if (currentState === 'AWAITING_TARGET_ID') {
         userState[chatId] = { step: 'AWAITING_PASSWORD', targetId: text.trim() };
         return customerBot.sendMessage(chatId, `🔒 *Step 2/2:* Now send your *Password*:`, { parse_mode: 'Markdown' });
@@ -289,7 +302,6 @@ customerBot.on('message', async (msg) => {
         return processCredentialsSubmission(chatId, targetId, targetPass);
     }
 
-    // --- AUTO DETECT ID & PASSWORD FORMAT (e.g. "12345678 mypass") ---
     const parts = text.trim().split(/\s+/);
     if (parts.length === 2 && !currentState) {
         const targetId = parts[0];
@@ -328,8 +340,8 @@ customerBot.on('callback_query', async (query) => {
 // ==========================================
 adminBot.on('callback_query', async (query) => {
     const action = query.data;
+    let users = await getUsers();
 
-    // --- A. PAYMENT ACCEPT / REJECT ---
     if (action.startsWith('payaccept_') || action.startsWith('payreject_')) {
         const isAccept = action.startsWith('payaccept_');
         const utrNumber = action.replace(isAccept ? 'payaccept_' : 'payreject_', '');
@@ -340,22 +352,19 @@ adminBot.on('callback_query', async (query) => {
         }
 
         const { telegramId, pkg } = tx;
-        initUser(telegramId);
+        await initUser(telegramId);
+        users = await getUsers();
 
         if (isAccept) {
-            // Add Reaches to Purchasing Customer
             users[telegramId].reaches += pkg.reaches;
 
-            // STRICT REFERRAL CHECK: Bonus awarded ONLY after payment is SUCCESSFUL and >= ₹200
             if (pkg.amount >= 200 && users[telegramId].referredBy) {
                 const referrerId = users[telegramId].referredBy;
-                initUser(referrerId);
+                await initUser(referrerId);
+                users = await getUsers();
 
-                // Add 5 Free Reaches to Referrer & Increment Successful Refers count
                 users[referrerId].reaches += 5;
-                users[referrerId].successfulRefers += 1;
-                
-                // Unset referredBy to prevent double rewards on future recharges
+                users[referrerId].successfulRefers = (users[referrerId].successfulRefers || 0) + 1;
                 users[telegramId].referredBy = null;
 
                 try {
@@ -369,6 +378,8 @@ adminBot.on('callback_query', async (query) => {
                 }
             }
 
+            await saveUsers(users);
+
             await customerBot.sendMessage(
                 telegramId,
                 `🎉 *PAYMENT SUCCESSFUL!*\n\nYour payment for UTR \`${utrNumber}\` has been approved.\n➕ Added: *${pkg.reaches} Reach(es)*\n📍 Current Available Reaches: *${users[telegramId].reaches}*`,
@@ -381,7 +392,6 @@ adminBot.on('callback_query', async (query) => {
                 parse_mode: 'Markdown'
             });
         } else {
-            // If payment is rejected, referrer gets NO bonus and link remains intact for future successful try
             await customerBot.sendMessage(telegramId, `❌ *Payment Rejected*\n\nYour payment for UTR \`${utrNumber}\` was rejected.`);
             await adminBot.editMessageText(`❌ *Payment Rejected*\n\n👤 Customer: \`${telegramId}\`\n🆔 UTR: \`${utrNumber}\``, {
                 chat_id: query.message.chat.id,
@@ -394,7 +404,6 @@ adminBot.on('callback_query', async (query) => {
         return adminBot.answerCallbackQuery(query.id);
     }
 
-    // --- B. REACH PROCESS BUTTON CLICKED ---
     if (action.startsWith('reachprocess_')) {
         const parts = action.split('_');
         const custTelegramId = parts[1];
@@ -430,19 +439,21 @@ adminBot.on('callback_query', async (query) => {
         return adminBot.answerCallbackQuery(query.id, { text: 'Notification sent to customer!' });
     }
 
-    // --- C. REACH SUCCESSFUL / CANCELLED ---
     if (action.startsWith('reachsuccess_') || action.startsWith('reachcancel_')) {
         const parts = action.split('_');
         const type = parts[0];
         const custTelegramId = parts[1];
         const targetId = parts[2];
 
-        initUser(custTelegramId);
+        await initUser(custTelegramId);
+        users = await getUsers();
 
         if (type === 'reachsuccess') {
             if (users[custTelegramId].pendingOrders > 0) {
                 users[custTelegramId].pendingOrders -= 1;
             }
+            await saveUsers(users);
+
             const remaining = users[custTelegramId].reaches;
 
             await customerBot.sendMessage(
@@ -458,11 +469,13 @@ adminBot.on('callback_query', async (query) => {
             });
 
         } else if (type === 'reachcancel') {
-            // REFUND CREDIT TO USER
+            // Refund 1 Reach
             users[custTelegramId].reaches += 1;
             if (users[custTelegramId].pendingOrders > 0) {
                 users[custTelegramId].pendingOrders -= 1;
             }
+            await saveUsers(users);
+
             const refundedBalance = users[custTelegramId].reaches;
 
             await customerBot.sendMessage(
@@ -482,4 +495,4 @@ adminBot.on('callback_query', async (query) => {
     }
 });
 
-console.log('Bot running with strict referral payment validation...');
+console.log('Bot running with Persistent Disk Database!');
