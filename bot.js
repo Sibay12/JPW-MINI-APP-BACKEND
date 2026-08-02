@@ -6,7 +6,7 @@ const CUSTOMER_BOT_TOKEN = '8874503246:AAEmdPcVJMQ3q6pmINsP_Tcwium3ANV4T6I';
 const ADMIN_BOT_TOKEN = '8787715855:AAF9PLZkk_tOb28TYcyTcAs_NszwURnzhkw';
 const ADMIN_CHAT_ID = '7659178694';
 const UPI_ID = 'paytm.s2ujlw0@pty';
-const BOT_USERNAME = 'JPW_REACHED_SERVICES_BOT'; // अपने बोट का यूज़रनेम (बिना @ के) लिखें
+const BOT_USERNAME = 'JPW_REACHED_SERVICES_BOT'; // अपने बोट का यूजरनेम (बिना @ के) लिखें
 
 const customerBot = new TelegramBot(CUSTOMER_BOT_TOKEN, { polling: true });
 const adminBot = new TelegramBot(ADMIN_BOT_TOKEN, { polling: true });
@@ -33,7 +33,10 @@ const getMainKeyboard = () => ({
 
 const initUser = (chatId) => {
     if (!users[chatId]) {
-        users[chatId] = { reaches: 0, referredBy: null, successfulRefers: 0 };
+        users[chatId] = { reaches: 0, referredBy: null, successfulRefers: 0, pendingOrders: 0 };
+    }
+    if (users[chatId].pendingOrders === undefined) {
+        users[chatId].pendingOrders = 0;
     }
 };
 
@@ -66,10 +69,11 @@ cron.schedule('0 9-20 * * *', async () => {
     timezone: "Asia/Kolkata"
 });
 
-// Helper function to process credential submission
+// Helper function to process credential submission with Instant Deduction & Locking
 async function processCredentialsSubmission(chatId, targetId, targetPass) {
     initUser(chatId);
 
+    // 1. Check if user has available reaches
     if (users[chatId].reaches <= 0) {
         return customerBot.sendMessage(
             chatId,
@@ -78,13 +82,19 @@ async function processCredentialsSubmission(chatId, targetId, targetPass) {
         );
     }
 
+    // 2. Lock & Instantly Deduct 1 Reach for this order
+    users[chatId].reaches -= 1;
+    users[chatId].pendingOrders += 1;
+    const remainingBalance = users[chatId].reaches;
+
     // Send Credentials to Admin with Action Buttons
     const adminMsg = `
 📤 *NEW CREDENTIALS SUBMITTED*
 
 👤 *User Telegram ID:* \`${chatId}\`
 🔐 *Credentials:* \`${targetId}\` \`${targetPass}\`
-📍 *Available Reaches Balance:* ${users[chatId].reaches} Reaches
+📍 *Remaining Reaches Balance:* ${remainingBalance} Reaches
+⏳ *Pending Orders Count:* ${users[chatId].pendingOrders}
 👥 *Completed Refers:* ${users[chatId].successfulRefers}
     `.trim();
 
@@ -107,10 +117,10 @@ async function processCredentialsSubmission(chatId, targetId, targetPass) {
         }
     );
 
-    // Initial Confirmation to Customer
+    // Confirmation to Customer
     return customerBot.sendMessage(
         chatId,
-        `✅ *Credentials Submitted & Queued!*\n\n👤 Engineer ID: \`${targetId}\`\nAvailable Balance: *${users[chatId].reaches} Reaches*\nYour request is queued for processing.`,
+        `✅ *Credentials Submitted & Queued!*\n\n👤 Engineer ID: \`${targetId}\`\n📉 *1 Credit Deducted* (Pending Approval)\n📍 *Current Balance:* ${remainingBalance} Reaches\n\nYour request is queued for processing.`,
         { parse_mode: 'Markdown' }
     );
 }
@@ -179,7 +189,7 @@ customerBot.on('message', async (msg) => {
     if (text === '👤 My Profile') {
         return customerBot.sendMessage(
             chatId,
-            `👤 *YOUR PROFILE*\n\n🆔 Telegram ID: \`${chatId}\`\n📍 Available Reaches: *${users[chatId].reaches}*\n👥 Completed Refers: *${users[chatId].successfulRefers}*`,
+            `👤 *YOUR PROFILE*\n\n🆔 Telegram ID: \`${chatId}\`\n📍 Available Reaches: *${users[chatId].reaches}*\n⏳ Pending Orders: *${users[chatId].pendingOrders}*\n👥 Completed Refers: *${users[chatId].successfulRefers}*`,
             { parse_mode: 'Markdown' }
         );
     }
@@ -194,10 +204,10 @@ customerBot.on('message', async (msg) => {
 \`${refLink}\`
 
 📊 *Your Stats:*
-• Completed Refers: *${users[chatId].successfulRefers}*
+• Successful Refers: *${users[chatId].successfulRefers}*
 • Earned Bonus: *${users[chatId].successfulRefers * 5} Reaches*
 
-🎁 *Condition:* Get *5 Free Reaches* for every friend who completes a minimum recharge of *₹200* (14 Reaches)!
+🎁 *Condition:* You will receive *5 Free Reaches* only AFTER your referred friend's minimum recharge of *₹200* is SUCCESSFUL and approved by Admin.
         `.trim();
 
         return customerBot.sendMessage(chatId, refMsg, { parse_mode: 'Markdown' });
@@ -219,7 +229,7 @@ customerBot.on('message', async (msg) => {
         });
     }
 
-    // --- Submit Credentials Button Clicked ---
+    // --- Submit Credentials Button ---
     if (text === '📤 Submit Credentials') {
         if (users[chatId].reaches <= 0) {
             return customerBot.sendMessage(chatId, `❌ *Insufficient Reaches!*\nPlease buy reaches first. Current Balance: ${users[chatId].reaches}`);
@@ -333,20 +343,25 @@ adminBot.on('callback_query', async (query) => {
         initUser(telegramId);
 
         if (isAccept) {
+            // Add Reaches to Purchasing Customer
             users[telegramId].reaches += pkg.reaches;
 
+            // STRICT REFERRAL CHECK: Bonus awarded ONLY after payment is SUCCESSFUL and >= ₹200
             if (pkg.amount >= 200 && users[telegramId].referredBy) {
                 const referrerId = users[telegramId].referredBy;
                 initUser(referrerId);
 
+                // Add 5 Free Reaches to Referrer & Increment Successful Refers count
                 users[referrerId].reaches += 5;
                 users[referrerId].successfulRefers += 1;
+                
+                // Unset referredBy to prevent double rewards on future recharges
                 users[telegramId].referredBy = null;
 
                 try {
                     await customerBot.sendMessage(
                         referrerId,
-                        `🎉 *REFERRAL BONUS RECEIVED!*\n\nYour referred friend completed a recharge of ₹${pkg.amount}.\n🎁 Bonus Added: *5 Free Reaches*\n📍 New Total Reaches: *${users[referrerId].reaches}*`,
+                        `🎉 *REFERRAL BONUS RECEIVED!*\n\nYour referred friend's recharge of ₹${pkg.amount} was SUCCESSFUL!\n🎁 Bonus Added: *5 Free Reaches*\n📍 New Total Reaches: *${users[referrerId].reaches}*`,
                         { parse_mode: 'Markdown' }
                     );
                 } catch (e) {
@@ -366,6 +381,7 @@ adminBot.on('callback_query', async (query) => {
                 parse_mode: 'Markdown'
             });
         } else {
+            // If payment is rejected, referrer gets NO bonus and link remains intact for future successful try
             await customerBot.sendMessage(telegramId, `❌ *Payment Rejected*\n\nYour payment for UTR \`${utrNumber}\` was rejected.`);
             await adminBot.editMessageText(`❌ *Payment Rejected*\n\n👤 Customer: \`${telegramId}\`\n🆔 UTR: \`${utrNumber}\``, {
                 chat_id: query.message.chat.id,
@@ -414,7 +430,7 @@ adminBot.on('callback_query', async (query) => {
         return adminBot.answerCallbackQuery(query.id, { text: 'Notification sent to customer!' });
     }
 
-    // --- C. REACH SUCCESSFUL / CANCELLED (Never Expires) ---
+    // --- C. REACH SUCCESSFUL / CANCELLED ---
     if (action.startsWith('reachsuccess_') || action.startsWith('reachcancel_')) {
         const parts = action.split('_');
         const type = parts[0];
@@ -424,8 +440,8 @@ adminBot.on('callback_query', async (query) => {
         initUser(custTelegramId);
 
         if (type === 'reachsuccess') {
-            if (users[custTelegramId].reaches > 0) {
-                users[custTelegramId].reaches -= 1;
+            if (users[custTelegramId].pendingOrders > 0) {
+                users[custTelegramId].pendingOrders -= 1;
             }
             const remaining = users[custTelegramId].reaches;
 
@@ -435,20 +451,27 @@ adminBot.on('callback_query', async (query) => {
                 { parse_mode: 'Markdown' }
             );
 
-            await adminBot.editMessageText(`✅ *Marked as Reach Successful*\n👤 User Telegram ID: \`${custTelegramId}\`\n🔑 Engineer ID: \`${targetId}\`\n📉 Deducted: 1 Reach (Remaining: ${remaining})`, {
+            await adminBot.editMessageText(`✅ *Marked as Reach Successful*\n👤 User Telegram ID: \`${custTelegramId}\`\n🔑 Engineer ID: \`${targetId}\`\n📍 Credit Permanently Deducted (Remaining: ${remaining})`, {
                 chat_id: query.message.chat.id,
                 message_id: query.message.message_id,
                 parse_mode: 'Markdown'
             });
 
         } else if (type === 'reachcancel') {
+            // REFUND CREDIT TO USER
+            users[custTelegramId].reaches += 1;
+            if (users[custTelegramId].pendingOrders > 0) {
+                users[custTelegramId].pendingOrders -= 1;
+            }
+            const refundedBalance = users[custTelegramId].reaches;
+
             await customerBot.sendMessage(
                 custTelegramId,
-                `❌ *REACH CANCELLED*\n\n👤 Engineer ID: \`${targetId}\`\n📊 Status: CANCELLED\nYour reach request was cancelled. No reaches were deducted. Current Balance: ${users[custTelegramId].reaches}`,
+                `❌ *REACH CANCELLED & REFUNDED*\n\n👤 Engineer ID: \`${targetId}\`\n📊 Status: CANCELLED\n↩️ *1 Credit Refunded Back to Your Account*\n📍 Current Reaches Balance: *${refundedBalance}*`,
                 { parse_mode: 'Markdown' }
             );
 
-            await adminBot.editMessageText(`❌ *Marked as Reach Cancelled*\n👤 User Telegram ID: \`${custTelegramId}\`\n🔑 Engineer ID: \`${targetId}\`\n📍 Balance Retained: ${users[custTelegramId].reaches} Reaches`, {
+            await adminBot.editMessageText(`❌ *Marked as Reach Cancelled*\n👤 User Telegram ID: \`${custTelegramId}\`\n🔑 Engineer ID: \`${targetId}\`\n↩️ 1 Credit Refunded (Current Balance: ${refundedBalance})`, {
                 chat_id: query.message.chat.id,
                 message_id: query.message.message_id,
                 parse_mode: 'Markdown'
@@ -459,4 +482,4 @@ adminBot.on('callback_query', async (query) => {
     }
 });
 
-console.log('Bot running with Auto Credentials Detection & Persistent Order Processing...');
+console.log('Bot running with strict referral payment validation...');
